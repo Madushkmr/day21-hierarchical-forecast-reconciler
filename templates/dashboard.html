@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Day 21 — Hierarchical Forecast Reconciler</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #0f1420; color: #e6e9f0; }
+  header { padding: 20px 28px; border-bottom: 1px solid #232a3d; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: #8b93a7; font-size: 13px; }
+  .wrap { padding: 24px 28px; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
+  .panel { background: #161c2b; border: 1px solid #232a3d; border-radius: 10px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b93a7; margin: 0 0 12px; }
+  select, button { background: #1f273b; color: #e6e9f0; border: 1px solid #303a55; border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { background: #2a3450; }
+  .node-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+  .node-list li { padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .node-list li:hover { background: #1f273b; }
+  .node-list li.active { background: #2a3f6b; }
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px; margin-left: 6px; }
+  .badge.total { background: #3a2f6b; }
+  .badge.category { background: #2f5a6b; }
+  .badge.product { background: #2f6b45; }
+  .kpis { display: flex; gap: 12px; margin-bottom: 16px; }
+  .kpi { flex: 1; background: #1f273b; border-radius: 8px; padding: 12px; }
+  .kpi .label { font-size: 11px; color: #8b93a7; }
+  .kpi .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .alert { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
+  .alert.high { background: #4a1f2b; border: 1px solid #7a2f3f; }
+  .alert.medium { background: #4a3a1f; border: 1px solid #7a5f2f; }
+  pre#narrative { white-space: pre-wrap; font-size: 13px; background: #10151f; padding: 12px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hierarchical Forecast Reconciler</h1>
+  <p>Day 21 of a daily BI/AI app series — ensemble forecasting + bottom-up/top-down reconciliation, with drift alerting.</p>
+</header>
+<div class="wrap">
+  <div class="panel">
+    <h2>Nodes</h2>
+    <ul class="node-list" id="nodeList"></ul>
+    <div style="margin-top:14px;">
+      <button id="runBtn">Trigger new run (needs API key)</button>
+    </div>
+  </div>
+  <div>
+    <div class="kpis">
+      <div class="kpi"><div class="label">Latest run</div><div class="value" id="kpiRun">—</div></div>
+      <div class="kpi"><div class="label">Nodes forecast</div><div class="value" id="kpiNodes">—</div></div>
+      <div class="kpi"><div class="label">Alerts this run</div><div class="value" id="kpiAlerts">—</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h2 id="chartTitle">Forecast</h2>
+      <canvas id="chart" height="110"></canvas>
+    </div>
+    <div class="panel" style="margin-bottom:16px;">
+      <h2>Alerts</h2>
+      <div id="alerts"></div>
+    </div>
+    <div class="panel">
+      <h2>Narrative</h2>
+      <pre id="narrative">Loading…</pre>
+    </div>
+  </div>
+</div>
+<script>
+let chart;
+let runData = null;
+
+async function loadLatest() {
+  const res = await fetch('/api/runs/latest');
+  if (!res.ok) {
+    document.getElementById('narrative').textContent = 'No runs yet. Run `python cli.py forecast` first, then reload.';
+    return;
+  }
+  runData = await res.json();
+  render();
+}
+
+function render() {
+  const { run, forecasts, alerts } = runData;
+  document.getElementById('kpiRun').textContent = '#' + run.id;
+  const nodeNames = [...new Set(forecasts.map(f => f.node_name))];
+  document.getElementById('kpiNodes').textContent = nodeNames.length;
+  document.getElementById('kpiAlerts').textContent = alerts.length;
+
+  const list = document.getElementById('nodeList');
+  list.innerHTML = '';
+  const levels = {};
+  forecasts.forEach(f => levels[f.node_name] = f.node_level);
+  nodeNames.sort((a, b) => {
+    const order = { total: 0, category: 1, product: 2 };
+    return (order[levels[a]] - order[levels[b]]) || a.localeCompare(b);
+  });
+  nodeNames.forEach((name, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = name + `<span class="badge ${levels[name]}">${levels[name]}</span>`;
+    li.onclick = () => selectNode(name);
+    li.dataset.name = name;
+    if (i === 0) li.classList.add('active');
+    list.appendChild(li);
+  });
+
+  const alertsDiv = document.getElementById('alerts');
+  alertsDiv.innerHTML = alerts.length ? '' : '<div style="color:#8b93a7;font-size:13px;">No drift alerts this run.</div>';
+  alerts.forEach(a => {
+    const div = document.createElement('div');
+    div.className = 'alert ' + a.severity;
+    div.textContent = `[${a.severity.toUpperCase()}] ${a.node_name}: ${a.message}`;
+    alertsDiv.appendChild(div);
+  });
+
+  selectNode(nodeNames[0]);
+  fetchNarrative();
+}
+
+function selectNode(name) {
+  document.querySelectorAll('.node-list li').forEach(li => {
+    li.classList.toggle('active', li.dataset.name === name);
+  });
+  const rows = runData.forecasts.filter(f => f.node_name === name).sort((a,b) => a.step_offset - b.step_offset);
+  document.getElementById('chartTitle').textContent = 'Forecast — ' + name;
+  const labels = rows.map(r => 'w+' + (r.step_offset + 1));
+  const point = rows.map(r => r.point);
+  const lower = rows.map(r => r.lower);
+  const upper = rows.map(r => r.upper);
+
+  if (chart) chart.destroy();
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Upper (80%)', data: upper, borderColor: '#33415c', backgroundColor: 'rgba(90,120,200,0.08)', fill: '+1', pointRadius: 0 },
+        { label: 'Lower (80%)', data: lower, borderColor: '#33415c', backgroundColor: 'rgba(90,120,200,0.08)', fill: false, pointRadius: 0 },
+        { label: 'Reconciled point forecast', data: point, borderColor: '#5aa9ff', backgroundColor: '#5aa9ff', pointRadius: 3, borderWidth: 2 },
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: { ticks: { color: '#8b93a7' }, grid: { color: '#232a3d' } },
+        y: { ticks: { color: '#8b93a7' }, grid: { color: '#232a3d' } }
+      },
+      plugins: { legend: { labels: { color: '#e6e9f0' } } }
+    }
+  });
+}
+
+async function fetchNarrative() {
+  // narrative isn't stored verbatim in the DB; reconstruct a short one client-side
+  const { alerts } = runData;
+  const lines = [`Run #${runData.run.id} — ${runData.run.created_at}`,
+                  `Reconciliation strategy: ${runData.run.reconciliation_strategy}`,
+                  alerts.length ? `${alerts.length} drift alert(s) — see panel above.` : 'No drift alerts vs. previous run.'];
+  document.getElementById('narrative').textContent = lines.join('\n');
+}
+
+document.getElementById('runBtn').onclick = async () => {
+  const key = prompt('X-API-Key:');
+  if (!key) return;
+  const res = await fetch('/api/run', { method: 'POST', headers: { 'X-API-Key': key } });
+  if (!res.ok) { alert('Run failed: ' + res.status); return; }
+  await loadLatest();
+};
+
+loadLatest();
+</script>
+</body>
+</html>
