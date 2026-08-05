@@ -1,0 +1,31 @@
+# Day 21 configuration
+
+data:
+  sales_csv: sample_data/sales_hierarchy.csv
+  season_length: 52          # weekly data, yearly seasonality
+  forecast_horizon: 12        # weeks ahead
+
+ensemble:
+  backtest_holdout: 12         # weeks held out for model weighting
+  min_weight: 0.02             # floor so no model gets fully zeroed out
+
+reconciliation:
+  # blend weight between bottom-up and top-down reconciliation, chosen per
+  # node via backtest error if "auto", otherwise a fixed float in [0, 1]
+  # (1.0 = pure bottom-up, 0.0 = pure top-down)
+  strategy: auto
+
+uncertainty:
+  bootstrap_iterations: 2000
+  interval: 0.8                # 80% prediction interval
+
+scheduler:
+  interval_seconds: 3600       # how often the background scheduler re-runs
+  drift_alert_pct: 15          # flag a node if next-period forecast moves
+                                # more than this % vs the previous run
+
+api:
+  key: day21-demo-key          # override with FORECAST_API_KEY env var
+
+db:
+  path: forecast_engine.db
